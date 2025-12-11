@@ -1,0 +1,7 @@
+{
+  "name": "Copy of 1",
+  "description": "A tool to amplify your device's microphone input and play it back in real-time through your speakers. Adjust the gain to control the amplification level.",
+  "requestFramePermissions": [
+    "microphone"
+  ]
+}
