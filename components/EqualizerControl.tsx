@@ -1,5 +1,4 @@
 import React, { useState } from 'react';
-import { AiIcon } from './Icons';
 
 type Band = {
   id: string;
@@ -19,28 +18,9 @@ interface EqualizerControlProps {
   presets: string[];
   currentPreset: string;
   onPresetChange: (name: string) => void;
-  aiPrompt: string;
-  onAiPromptChange: (value: string) => void;
-  onGenerateWithAi: () => void;
-  isAiLoading: boolean;
-  aiError: string;
 }
 
-const EqualizerControl: React.FC<EqualizerControlProps> = ({ 
-    bands, 
-    onBandChange, 
-    postGain, 
-    onPostGainChange, 
-    onReset, 
-    presets, 
-    currentPreset, 
-    onPresetChange,
-    aiPrompt,
-    onAiPromptChange,
-    onGenerateWithAi,
-    isAiLoading,
-    aiError
-}) => {
+const EqualizerControl: React.FC<EqualizerControlProps> = ({ bands, onBandChange, postGain, onPostGainChange, onReset, presets, currentPreset, onPresetChange }) => {
   const [activeIndex, setActiveIndex] = useState<number | null>(null);
 
   const getGainFillStyle = (gain: number): React.CSSProperties => {
@@ -92,34 +72,6 @@ const EqualizerControl: React.FC<EqualizerControlProps> = ({
           Reset
         </button>
       </div>
-
-      <div className="w-full max-w-2xl my-4 p-4 border border-gray-700 rounded-lg bg-gray-800/50">
-        <h3 className="text-xl font-semibold text-center mb-3 flex items-center justify-center gap-2"><AiIcon className="w-6 h-6 text-yellow-400" /> AI-Powered EQ</h3>
-        <div className="flex gap-2">
-            <input
-                type="text"
-                value={aiPrompt}
-                onChange={(e) => onAiPromptChange(e.target.value)}
-                placeholder='e.g., "crisp podcast vocal" or "deep bass for EDM"'
-                className="flex-grow bg-gray-700 p-2 rounded-md focus:outline-none focus:ring-2 focus:ring-yellow-400"
-                disabled={isAiLoading}
-                onKeyDown={(e) => { if (e.key === 'Enter' && !isAiLoading && aiPrompt.trim()) onGenerateWithAi(); }}
-            />
-            <button
-                onClick={onGenerateWithAi}
-                className="p-3 bg-yellow-400 text-gray-900 rounded-md hover:bg-yellow-300 transition-colors flex items-center justify-center w-28 disabled:bg-gray-500 disabled:cursor-not-allowed"
-                disabled={isAiLoading || !aiPrompt.trim()}
-            >
-                {isAiLoading ? (
-                    <div className="w-5 h-5 border-2 border-gray-900 border-t-transparent rounded-full animate-spin"></div>
-                ) : (
-                    'Generate'
-                )}
-            </button>
-        </div>
-        {aiError && <p className="text-red-400 text-sm mt-2 text-center">{aiError}</p>}
-      </div>
-
       <div className="flex items-start justify-center gap-8 pt-4">
         {bands.map((band, index) => {
             const isPeaking = band.type === 'peaking' && band.q !== undefined;

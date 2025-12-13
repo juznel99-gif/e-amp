@@ -106,9 +106,3 @@ export const SearchIcon: React.FC<IconProps> = ({ className }) => (
         <path strokeLinecap="round" strokeLinejoin="round" d="M21 21l-5.197-5.197m0 0A7.5 7.5 0 105.196 5.196a7.5 7.5 0 0010.607 10.607z" />
     </svg>
 );
-
-export const GuitarIcon: React.FC<IconProps> = ({ className }) => (
-    <svg xmlns="http://www.w3.org/2000/svg" className={className} fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
-        <path strokeLinecap="round" strokeLinejoin="round" d="M9 9l.186-1.115a2.25 2.25 0 012.13-1.885h.369a2.25 2.25 0 012.13 1.885L15 9m-6 0h6m-6 0V6a3 3 0 013-3h0a3 3 0 013 3v3m-6 0v6m6-6v6m-6 6H9a3 3 0 01-3-3v-3m6 6h2.25a3 3 0 003-3v-3m-12 0v3m0 0V9" />
-    </svg>
-);

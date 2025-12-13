@@ -3,7 +3,7 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { GoogleGenAI, Type } from '@google/genai';
 import AudioVisualizer, { VisualizerStyle } from './components/AudioVisualizer';
-import { StopIcon, MicrophoneIcon, VolumeUpIcon, LightningBoltIcon, RecordIcon, CompressorIcon, DelayIcon, PanIcon, SoundWaveIcon, NoiseGateIcon, ReverbIcon, KaraokeIcon, FolderIcon, PlayIcon, AiIcon, SearchIcon, GuitarIcon } from './components/Icons';
+import { StopIcon, MicrophoneIcon, VolumeUpIcon, LightningBoltIcon, RecordIcon, CompressorIcon, DelayIcon, PanIcon, SoundWaveIcon, NoiseGateIcon, ReverbIcon, KaraokeIcon, FolderIcon, PlayIcon, AiIcon, SearchIcon } from './components/Icons';
 import EqualizerControl from './components/EqualizerControl';
 import { initDB, addRecording, getAllRecordings, deleteRecording, Recording } from './db';
 import ToggleSwitch from './components/ToggleSwitch';
@@ -62,68 +62,6 @@ const presets: { [key: string]: typeof initialEqBands } = {
   ],
 };
 
-const noiseGateProcessorString = `
-class NoiseGateProcessor extends AudioWorkletProcessor {
-  static get parameterDescriptors() {
-    return [
-      { name: 'threshold', defaultValue: -50, minValue: -100, maxValue: 0 },
-      { name: 'release', defaultValue: 0.25, minValue: 0.05, maxValue: 1 }
-    ];
-  }
-
-  constructor() {
-    super();
-    this._gain = 1.0;
-    this._attackTimeConstant = 0.005;
-  }
-
-  process(inputs, outputs, parameters) {
-    const input = inputs[0];
-    const output = outputs[0];
-    const thresholdValues = parameters.threshold;
-    const releaseValues = parameters.release;
-
-    const attackAlpha = Math.exp(-1.0 / (this._attackTimeConstant * sampleRate));
-    const blockLength = 128; // Standard render quantum size
-
-    for (let i = 0; i < blockLength; i++) {
-      const threshold = thresholdValues.length > 1 ? thresholdValues[i] : thresholdValues[0];
-      const release = releaseValues.length > 1 ? releaseValues[i] : releaseValues[0];
-      
-      const releaseTimeConstant = Math.max(0.001, release);
-      const releaseAlpha = Math.exp(-1.0 / (releaseTimeConstant * sampleRate));
-      
-      const thresholdValue = 10 ** (threshold / 20);
-
-      let envelope = 0.0;
-      for (let channel = 0; channel < input.length; channel++) {
-        const sample = input[channel]?.[i];
-        if (sample !== undefined) {
-            envelope = Math.max(envelope, Math.abs(sample));
-        }
-      }
-
-      const targetGain = envelope > thresholdValue ? 1.0 : 0.0;
-
-      if (targetGain > this._gain) {
-        this._gain = attackAlpha * this._gain + (1.0 - attackAlpha) * targetGain;
-      } else {
-        this._gain = releaseAlpha * this._gain + (1.0 - releaseAlpha) * targetGain;
-      }
-
-      for (let channel = 0; channel < output.length; channel++) {
-        if(input[channel]?.[i] !== undefined) {
-          output[channel][i] = input[channel][i] * this._gain;
-        }
-      }
-    }
-    return true;
-  }
-}
-registerProcessor('noise-gate-processor', NoiseGateProcessor);
-`;
-
-
 const EffectSlider = ({ label, value, min, max, step, onChange, unit = '', format = (v: number) => v.toFixed(2), onReset }: any) => (
     <div className="flex flex-col items-center space-y-2 text-white w-full">
         <div className="flex items-center gap-3">
@@ -162,12 +100,6 @@ const App: React.FC = () => {
     const [eqBands, setEqBands] = useState<typeof initialEqBands>(JSON.parse(JSON.stringify(initialEqBands)));
     const [currentPreset, setCurrentPreset] = useState('flat');
     const [postGain, setPostGain] = useState(1);
-    const [aiEqPrompt, setAiEqPrompt] = useState('');
-    const [isAiEqLoading, setIsAiEqLoading] = useState(false);
-    const [aiEqError, setAiEqError] = useState('');
-
-    // Amp Models
-    const [activeSoundStyle, setActiveSoundStyle] = useState<string>('clean');
 
     // Effects state
     const [compressorEnabled, setCompressorEnabled] = useState(false);
@@ -219,81 +151,24 @@ const App: React.FC = () => {
     const delayNodeRef = useRef<DelayNode | null>(null);
     const feedbackNodeRef = useRef<GainNode | null>(null);
     const pannerNodeRef = useRef<StereoPannerNode | null>(null);
-    const noiseGateNodeRef = useRef<AudioNode | null>(null);
+    const noiseGateNodeRef = useRef<GainNode | null>(null);
+    const noiseGateAnalyserNodeRef = useRef<AnalyserNode | null>(null);
+    const scriptProcessorNodeRef = useRef<ScriptProcessorNode | null>(null);
     const reverbNodeRef = useRef<ConvolverNode | null>(null);
     const reverbWetGainRef = useRef<GainNode | null>(null);
     const reverbDryGainRef = useRef<GainNode | null>(null);
+    const noiseGateRef = useRef(noiseGate);
     
     const aiRef = useRef<GoogleGenAI | null>(null);
-
-    const soundStyles: { [key: string]: { gain: number, drive: number, eqBands: typeof initialEqBands } } = {
-        clean: { gain: 1, drive: 0, eqBands: JSON.parse(JSON.stringify(initialEqBands)) },
-        rock: {
-            gain: 5, drive: 0.6,
-            eqBands: [
-                { id: 'sub', label: 'Sub Bass', gain: 2, freq: 60, type: 'lowshelf' },
-                { id: 'bass', label: 'Low Mid', gain: -2, q: 1, freq: 250, type: 'peaking' },
-                { id: 'mid', label: 'Mid', gain: 4, q: 1.2, freq: 1000, type: 'peaking' },
-                { id: 'upperMid', label: 'High Mid', gain: 5, q: 1.5, freq: 4000, type: 'peaking' },
-                { id: 'treble', label: 'Treble', gain: 3, freq: 10000, type: 'highshelf' },
-            ]
-        },
-        jazz: {
-            gain: 2.5, drive: 0.1,
-            eqBands: [
-                { id: 'sub', label: 'Sub Bass', gain: 3, freq: 60, type: 'lowshelf' },
-                { id: 'bass', label: 'Low Mid', gain: 2, q: 1, freq: 250, type: 'peaking' },
-                { id: 'mid', label: 'Mid', gain: -3, q: 1, freq: 1000, type: 'peaking' },
-                { id: 'upperMid', label: 'High Mid', gain: 1, q: 1.2, freq: 4000, type: 'peaking' },
-                { id: 'treble', label: 'Treble', gain: 4, freq: 10000, type: 'highshelf' },
-            ]
-        },
-        country: {
-            gain: 4, drive: 0.3,
-            eqBands: [
-                { id: 'sub', label: 'Sub Bass', gain: 0, freq: 60, type: 'lowshelf' },
-                { id: 'bass', label: 'Low Mid', gain: -2, q: 1, freq: 250, type: 'peaking' },
-                { id: 'mid', label: 'Mid', gain: 3, q: 1.5, freq: 1500, type: 'peaking' },
-                { id: 'upperMid', label: 'High Mid', gain: 6, q: 1.5, freq: 4000, type: 'peaking' },
-                { id: 'treble', label: 'Treble', gain: 4, freq: 10000, type: 'highshelf' },
-            ]
-        },
-        metal: {
-            gain: 8, drive: 0.9,
-            eqBands: [
-                { id: 'sub', label: 'Sub Bass', gain: 6, freq: 60, type: 'lowshelf' },
-                { id: 'bass', label: 'Low Mid', gain: 4, q: 1, freq: 250, type: 'peaking' },
-                { id: 'mid', label: 'Mid', gain: -8, q: 1.5, freq: 1000, type: 'peaking' },
-                { id: 'upperMid', label: 'High Mid', gain: 5, q: 1.2, freq: 4000, type: 'peaking' },
-                { id: 'treble', label: 'Treble', gain: 7, freq: 10000, type: 'highshelf' },
-            ]
-        },
-        blues: {
-            gain: 4.5, drive: 0.5,
-            eqBands: [
-                { id: 'sub', label: 'Sub Bass', gain: 1, freq: 60, type: 'lowshelf' },
-                { id: 'bass', label: 'Low Mid', gain: 3, q: 1, freq: 250, type: 'peaking' },
-                { id: 'mid', label: 'Mid', gain: 6, q: 1.8, freq: 1200, type: 'peaking' },
-                { id: 'upperMid', label: 'High Mid', gain: 2, q: 1.5, freq: 4000, type: 'peaking' },
-                { id: 'treble', label: 'Treble', gain: 1, freq: 10000, type: 'highshelf' },
-            ]
-        },
-        acoustic: {
-            gain: 1.5, drive: 0,
-            eqBands: [
-                { id: 'sub', label: 'Sub Bass', gain: 0, freq: 60, type: 'lowshelf' },
-                { id: 'bass', label: 'Low Mid', gain: -4, q: 1, freq: 300, type: 'peaking' },
-                { id: 'mid', label: 'Mid', gain: 0, q: 1, freq: 1000, type: 'peaking' },
-                { id: 'upperMid', label: 'High Mid', gain: 2, q: 1.2, freq: 4000, type: 'peaking' },
-                { id: 'treble', label: 'Treble', gain: 5, freq: 10000, type: 'highshelf' },
-            ]
-        }
-    };
 
     const loadRecordings = useCallback(async () => {
         const recs = await getAllRecordings();
         setRecordings(recs);
     }, []);
+
+    useEffect(() => {
+        noiseGateRef.current = noiseGate;
+    }, [noiseGate]);
 
     useEffect(() => {
         initDB().then(success => {
@@ -413,30 +288,41 @@ const App: React.FC = () => {
     const connectNodes = useCallback(async () => {
         if (!audioContextRef.current || !sourceNodeRef.current) return;
         
+        const bufferSize = audioContextRef.current.sampleRate * latency;
+
         let lastNode: AudioNode = sourceNodeRef.current;
     
         if (noiseGateEnabled) {
-            try {
-                const blob = new Blob([noiseGateProcessorString], { type: 'application/javascript' });
-                const url = URL.createObjectURL(blob);
-                await audioContextRef.current.audioWorklet.addModule(url);
-                URL.revokeObjectURL(url);
-        
-                const workletNode = new AudioWorkletNode(audioContextRef.current, 'noise-gate-processor');
-                const thresholdParam = workletNode.parameters.get('threshold');
-                const releaseParam = workletNode.parameters.get('release');
+            noiseGateAnalyserNodeRef.current = audioContextRef.current.createAnalyser();
+            noiseGateAnalyserNodeRef.current.fftSize = 256;
+            
+            scriptProcessorNodeRef.current = audioContextRef.current.createScriptProcessor(256, 1, 1);
+            noiseGateNodeRef.current = audioContextRef.current.createGain();
+
+            const data = new Uint8Array(noiseGateAnalyserNodeRef.current.frequencyBinCount);
+            
+            scriptProcessorNodeRef.current.onaudioprocess = () => {
+                if (!noiseGateNodeRef.current || !noiseGateAnalyserNodeRef.current || !audioContextRef.current) return;
                 
-                if (thresholdParam) thresholdParam.value = noiseGate.threshold;
-                if (releaseParam) releaseParam.value = noiseGate.release;
+                const { threshold, release } = noiseGateRef.current;
+                const thresholdValue = Math.pow(10, threshold / 20);
+
+                noiseGateAnalyserNodeRef.current.getByteTimeDomainData(data);
+                const rms = Math.sqrt(data.reduce((acc, val) => acc + Math.pow((val - 128) / 128, 2), 0) / data.length);
                 
-                noiseGateNodeRef.current = workletNode;
-        
-                lastNode.connect(noiseGateNodeRef.current);
-                lastNode = noiseGateNodeRef.current;
-            } catch(e) {
-                console.error("Failed to load noise gate audio worklet. Disabling effect.", e);
-                setNoiseGateEnabled(false); // Fallback to disable if worklet fails to load
-            }
+                if (rms > thresholdValue) {
+                    noiseGateNodeRef.current.gain.setTargetAtTime(1, audioContextRef.current.currentTime, 0.01);
+                } else {
+                    noiseGateNodeRef.current.gain.setTargetAtTime(0, audioContextRef.current.currentTime, release);
+                }
+            };
+            
+            lastNode.connect(noiseGateAnalyserNodeRef.current);
+            noiseGateAnalyserNodeRef.current.connect(scriptProcessorNodeRef.current);
+            scriptProcessorNodeRef.current.connect(audioContextRef.current.destination); // This is a common way to keep the node alive
+
+            lastNode.connect(noiseGateNodeRef.current);
+            lastNode = noiseGateNodeRef.current;
         }
 
         gainNodeRef.current = audioContextRef.current.createGain();
@@ -618,22 +504,14 @@ const App: React.FC = () => {
             audioContextRef.current.close();
             audioContextRef.current = null;
         }
-        
-        // Clear all audio node refs
         sourceNodeRef.current = null;
         gainNodeRef.current = null;
         driveNodeRef.current = null;
         analyserNodeRef.current = null;
-        eqNodesRef.current = [];
-        postGainNodeRef.current = null;
-        compressorNodeRef.current = null;
-        delayNodeRef.current = null;
-        feedbackNodeRef.current = null;
-        pannerNodeRef.current = null;
-        noiseGateNodeRef.current = null;
-        reverbNodeRef.current = null;
-        reverbWetGainRef.current = null;
-        reverbDryGainRef.current = null;
+        
+        // Disconnect script processor to prevent memory leaks
+        scriptProcessorNodeRef.current?.disconnect();
+        scriptProcessorNodeRef.current = null;
 
         setStatus('stopped');
         if (navigator.mediaSession) {
@@ -697,15 +575,6 @@ const App: React.FC = () => {
     useEffect(() => { if (feedbackNodeRef.current) feedbackNodeRef.current.gain.value = delay.feedback; }, [delay.feedback]);
     useEffect(() => { if (pannerNodeRef.current) pannerNodeRef.current.pan.value = panner.pan; }, [panner]);
     useEffect(() => {
-        if (noiseGateNodeRef.current && audioContextRef.current && 'parameters' in noiseGateNodeRef.current) {
-            const workletNode = noiseGateNodeRef.current as AudioWorkletNode;
-            const thresholdParam = workletNode.parameters.get('threshold');
-            const releaseParam = workletNode.parameters.get('release');
-            if (thresholdParam) thresholdParam.setTargetAtTime(noiseGate.threshold, audioContextRef.current.currentTime, 0.02);
-            if (releaseParam) releaseParam.setTargetAtTime(noiseGate.release, audioContextRef.current.currentTime, 0.02);
-        }
-    }, [noiseGate]);
-    useEffect(() => {
         if(reverbDryGainRef.current && reverbWetGainRef.current) {
             reverbDryGainRef.current.gain.value = 1 - reverb.mix;
             reverbWetGainRef.current.gain.value = reverb.mix;
@@ -765,112 +634,11 @@ const App: React.FC = () => {
             return newBands;
         });
         setCurrentPreset('custom');
-        setActiveSoundStyle('custom');
     };
     
     const handlePresetChange = (name: string) => {
         setEqBands(JSON.parse(JSON.stringify(presets[name])));
         setCurrentPreset(name);
-        setActiveSoundStyle('custom');
-    };
-
-    const handleSoundStyleChange = (styleName: string) => {
-        const style = soundStyles[styleName as keyof typeof soundStyles];
-        if (style) {
-            setGain(style.gain);
-            setDrive(style.drive);
-            setEqBands(style.eqBands);
-            setCurrentPreset('custom'); // EQ preset is now based on the sound style
-            setActiveSoundStyle(styleName);
-        }
-    };
-
-    const handleGainChange = (value: number) => {
-        setGain(value);
-        setActiveSoundStyle('custom');
-    };
-    
-    const handleDriveChange = (value: number) => {
-        setDrive(value);
-        setActiveSoundStyle('custom');
-    };
-
-    const handleGenerateEqWithAi = async () => {
-        if (!aiEqPrompt || !aiRef.current) return;
-    
-        setIsAiEqLoading(true);
-        setAiEqError('');
-    
-        try {
-            const prompt = `You are an expert audio engineer. Based on the user's request, provide the ideal 5-band equalizer settings to achieve the desired sound.
-    User's request: "${aiEqPrompt}"
-    
-    The 5 bands are:
-    1. 'sub': A lowshelf filter at 60Hz.
-    2. 'bass': A peaking filter at 250Hz.
-    3. 'mid': A peaking filter at 1000Hz.
-    4. 'upperMid': A peaking filter at 4000Hz.
-    5. 'treble': A highshelf filter at 10000Hz.
-    
-    For each band, provide a 'gain' value in dB between -40 and 40. For the three peaking filters ('bass', 'mid', 'upperMid'), also provide a 'q' value (Q factor) between 0.1 and 20, where a higher Q value means a narrower bandwidth.
-    Return ONLY the JSON object containing an array of 5 band setting objects in the correct order [sub, bass, mid, upperMid, treble]. Each object must contain 'gain', and peaking filters must also contain 'q'.
-    `;
-    
-            const response = await aiRef.current.models.generateContent({
-                model: 'gemini-2.5-flash',
-                contents: prompt,
-                config: {
-                    responseMimeType: 'application/json',
-                    responseSchema: {
-                        type: Type.OBJECT,
-                        properties: {
-                            bands: {
-                                type: Type.ARRAY,
-                                items: {
-                                    type: Type.OBJECT,
-                                    properties: {
-                                        gain: { type: Type.NUMBER, description: 'Gain in dB, from -40 to 40.' },
-                                        q: { type: Type.NUMBER, description: 'Q factor for peaking filters, from 0.1 to 20. Only for bass, mid, and upperMid.' }
-                                    },
-                                    required: ['gain']
-                                }
-                            }
-                        },
-                        required: ['bands']
-                    }
-                }
-            });
-    
-            const result = JSON.parse(response.text);
-            
-            if (result.bands && Array.isArray(result.bands) && result.bands.length === 5) {
-                const newBands = eqBands.map((band, index) => {
-                    const aiBand = result.bands[index];
-                    if (!aiBand || typeof aiBand.gain !== 'number') {
-                        throw new Error(`Invalid data for band ${index + 1}`);
-                    }
-                    
-                    const newBand = { ...band };
-                    newBand.gain = Math.max(-40, Math.min(40, aiBand.gain)); // Clamp gain
-                    
-                    if (newBand.type === 'peaking' && aiBand.q && typeof aiBand.q === 'number') {
-                        newBand.q = Math.max(0.1, Math.min(20, aiBand.q)); // Clamp Q
-                    }
-                    return newBand;
-                });
-                setEqBands(newBands);
-                setCurrentPreset('custom');
-                setActiveSoundStyle('custom');
-            } else {
-                throw new Error('AI response was not in the expected format.');
-            }
-    
-        } catch (error) {
-            console.error("AI EQ generation failed:", error);
-            setAiEqError("Failed to generate EQ settings. Please try a different prompt.");
-        } finally {
-            setIsAiEqLoading(false);
-        }
     };
 
     const handleSignOut = () => {
@@ -1135,25 +903,8 @@ const App: React.FC = () => {
                     <div className="flex-grow overflow-y-auto">
                         {activeTab === 'amplifier' && (
                             <div className="flex flex-col items-center space-y-8 max-w-2xl mx-auto">
-                                <EffectSlider label="Gain" value={gain} min="0" max="10" step="0.1" onChange={handleGainChange} unit="x" onReset={() => handleGainChange(1)} />
-                                <EffectSlider label="Drive" value={drive} min="0" max="1" step="0.01" onChange={handleDriveChange} onReset={() => handleDriveChange(0)} />
-                                <div className="pt-8 mt-8 border-t border-gray-700 w-full flex flex-col items-center">
-                                    <h3 className="text-2xl font-semibold text-center mb-4 flex items-center gap-2">
-                                        <GuitarIcon className="w-8 h-8 text-yellow-400" />
-                                        Amp Models
-                                    </h3>
-                                    <div className="flex flex-wrap justify-center gap-3 max-w-lg">
-                                        {Object.keys(soundStyles).map(styleName => (
-                                            <button
-                                                key={styleName}
-                                                onClick={() => handleSoundStyleChange(styleName)}
-                                                className={`px-4 py-2 rounded-md transition-colors text-base font-medium ${activeSoundStyle === styleName ? 'bg-yellow-400 text-gray-900 font-bold' : 'bg-gray-700 hover:bg-gray-600'}`}
-                                            >
-                                                {styleName.charAt(0).toUpperCase() + styleName.slice(1)}
-                                            </button>
-                                        ))}
-                                    </div>
-                                </div>
+                                <EffectSlider label="Gain" value={gain} min="0" max="10" step="0.1" onChange={setGain} unit="x" onReset={() => setGain(1)} />
+                                <EffectSlider label="Drive" value={drive} min="0" max="1" step="0.01" onChange={setDrive} onReset={() => setDrive(0)} />
                                 <div className="pt-4 border-t border-gray-700 w-full flex justify-center">
                                     <div className="w-full max-w-sm">
                                         <EffectSlider 
@@ -1171,21 +922,7 @@ const App: React.FC = () => {
                             </div>
                         )}
                         {activeTab === 'equalizer' && (
-                            <EqualizerControl 
-                                bands={eqBands} 
-                                onBandChange={handleEqBandChange} 
-                                postGain={postGain} 
-                                onPostGainChange={setPostGain} 
-                                onReset={() => handlePresetChange('flat')} 
-                                presets={Object.keys(presets)} 
-                                currentPreset={currentPreset} 
-                                onPresetChange={handlePresetChange}
-                                aiPrompt={aiEqPrompt}
-                                onAiPromptChange={setAiEqPrompt}
-                                onGenerateWithAi={handleGenerateEqWithAi}
-                                isAiLoading={isAiEqLoading}
-                                aiError={aiEqError}
-                            />
+                            <EqualizerControl bands={eqBands} onBandChange={handleEqBandChange} postGain={postGain} onPostGainChange={setPostGain} onReset={() => handlePresetChange('flat')} presets={Object.keys(presets)} currentPreset={currentPreset} onPresetChange={handlePresetChange} />
                         )}
                         {activeTab === 'effects' && (
                            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
